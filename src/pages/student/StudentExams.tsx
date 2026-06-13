@@ -1,13 +1,15 @@
 import { useExamStore } from '../../store/examStore';
 import { useAuthStore } from '../../store/authStore';
 import StatusBadge from '../../components/StatusBadge/StatusBadge';
-import { FileText, Clock, Calendar, Play, AlertTriangle } from 'lucide-react';
+import { FileText, Clock, Calendar, Play, AlertTriangle, Ban, Timer } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useState } from 'react';
 
 export default function StudentExams() {
   const { user } = useAuthStore();
   const { exams, participants, getParticipantsByExamId } = useExamStore();
   const navigate = useNavigate();
+  const [timeBlockMsg, setTimeBlockMsg] = useState<string | null>(null);
 
   const myParticipants = user ? participants.filter((p) => p.userId === user.id) : [];
 
@@ -22,12 +24,52 @@ export default function StudentExams() {
   const completedExams = myExams.filter((e) => e.participant.status === 'submitted');
   const makeupExams = myExams.filter((e) => e.participant.isMakeup);
 
-  const handleStartExam = (examId: string) => {
-    navigate(`/student/exam/${examId}`);
+  const checkExamTimeWindow = (exam: typeof exams[0]): { allowed: boolean; reason?: string } => {
+    const now = Date.now();
+    const start = new Date(exam.startTime).getTime();
+    const end = new Date(exam.endTime).getTime();
+    if (now < start) {
+      return {
+        allowed: false,
+        reason: `考试尚未开始，请于 ${new Date(start).toLocaleString('zh-CN')} 后进入`,
+      };
+    }
+    if (now > end) {
+      return { allowed: false, reason: '考试已结束，无法进入' };
+    }
+    return { allowed: true };
+  };
+
+  const handleStartExam = (exam: typeof exams[0]) => {
+    const check = checkExamTimeWindow(exam);
+    if (!check.allowed) {
+      setTimeBlockMsg(check.reason || '当前不在考试时间范围内');
+      setTimeout(() => setTimeBlockMsg(null), 4000);
+      return;
+    }
+    navigate(`/student/exam/${exam.id}`);
+  };
+
+  const getExamTimeStatus = (exam: typeof exams[0]): 'not_started' | 'ongoing' | 'ended' => {
+    const now = Date.now();
+    const start = new Date(exam.startTime).getTime();
+    const end = new Date(exam.endTime).getTime();
+    if (now < start) return 'not_started';
+    if (now > end) return 'ended';
+    return 'ongoing';
   };
 
   return (
     <div className="space-y-6">
+      {timeBlockMsg && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 animate-[fadeIn_0.3s]">
+          <div className="flex items-center gap-2.5 px-5 py-3 bg-red-50 border border-red-200 rounded-xl shadow-lg">
+            <Ban size={18} className="text-red-500 flex-shrink-0" />
+            <p className="text-sm text-red-700 font-medium">{timeBlockMsg}</p>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-xl p-5 text-white">
           <p className="text-blue-100 text-sm mb-1">待参加考试</p>
@@ -96,13 +138,40 @@ export default function StudentExams() {
                     <span className="text-gray-500">及格线 </span>
                     <span className="font-medium text-orange-600">{exam.passScore}分</span>
                   </div>
-                  <button
-                    onClick={() => handleStartExam(exam.id)}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
-                  >
-                    <Play size={16} />
-                    开始考试
-                  </button>
+                  {(() => {
+                    const ts = getExamTimeStatus(exam);
+                    if (ts === 'not_started') {
+                      return (
+                        <button
+                          disabled
+                          className="flex items-center gap-1.5 px-4 py-2 bg-gray-100 text-gray-500 rounded-lg cursor-not-allowed text-sm font-medium"
+                        >
+                          <Timer size={16} />
+                          未开始
+                        </button>
+                      );
+                    }
+                    if (ts === 'ended') {
+                      return (
+                        <button
+                          disabled
+                          className="flex items-center gap-1.5 px-4 py-2 bg-gray-100 text-gray-500 rounded-lg cursor-not-allowed text-sm font-medium"
+                        >
+                          <Ban size={16} />
+                          已结束
+                        </button>
+                      );
+                    }
+                    return (
+                      <button
+                        onClick={() => handleStartExam(exam)}
+                        className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                      >
+                        <Play size={16} />
+                        开始考试
+                      </button>
+                    );
+                  })()}
                 </div>
               </div>
             ))}
@@ -139,14 +208,45 @@ export default function StudentExams() {
                   您上次考试未参加，请按时参加补考
                 </p>
 
-                <div className="flex items-center justify-end">
-                  <button
-                    onClick={() => handleStartExam(exam.id)}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors text-sm font-medium"
-                  >
-                    <Play size={16} />
-                    参加补考
-                  </button>
+                <div className="flex items-center justify-between">
+                  {(() => {
+                    const ts = getExamTimeStatus(exam);
+                    if (ts === 'not_started') {
+                      return (
+                        <p className="text-xs text-gray-500 flex items-center gap-1">
+                          <Timer size={14} />
+                          考试未开始
+                        </p>
+                      );
+                    }
+                    if (ts === 'ended') {
+                      return (
+                        <p className="text-xs text-red-500 flex items-center gap-1">
+                          <Ban size={14} />
+                          考试已结束
+                        </p>
+                      );
+                    }
+                    return <div />;
+                  })()}
+                  {(() => {
+                    const ts = getExamTimeStatus(exam);
+                    const disabled = ts !== 'ongoing';
+                    return (
+                      <button
+                        onClick={() => !disabled && handleStartExam(exam)}
+                        disabled={disabled}
+                        className={
+                          disabled
+                            ? 'flex items-center gap-1.5 px-4 py-2 bg-gray-200 text-gray-500 rounded-lg cursor-not-allowed text-sm font-medium'
+                            : 'flex items-center gap-1.5 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors text-sm font-medium'
+                        }
+                      >
+                        <Play size={16} />
+                        参加补考
+                      </button>
+                    );
+                  })()}
                 </div>
               </div>
             ))}

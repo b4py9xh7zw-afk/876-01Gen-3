@@ -1,10 +1,18 @@
 import { useExamStore } from '../../store/examStore';
+import { useAuthStore } from '../../store/authStore';
 import StatusBadge from '../../components/StatusBadge/StatusBadge';
-import { Search, Plus, Edit, Trash2, Eye, Calendar, Clock } from 'lucide-react';
-import { useState } from 'react';
+import { Search, Plus, Edit, Trash2, Eye, Calendar, Clock, Users, AlertCircle } from 'lucide-react';
+import { useState, useMemo } from 'react';
+
+const positionLabels: Record<string, string> = {
+  doctor: '医生',
+  nurse: '护士',
+  technician: '技师',
+};
 
 export default function ExamManagement() {
   const { exams, addExam, getQuestionBanks } = useExamStore();
+  const { getDepartmentsByRole, getUsersByRoleAndDepartment } = useAuthStore();
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [formData, setFormData] = useState<{
@@ -29,18 +37,34 @@ export default function ExamManagement() {
     passScore: 60,
   });
 
+  const studentDepartments = useMemo(() => getDepartmentsByRole('student'), [getDepartmentsByRole]);
+  const allBanks = getQuestionBanks();
+  const filteredBanks = useMemo(
+    () => allBanks.filter((b) => b.positionType === formData.positionType),
+    [allBanks, formData.positionType]
+  );
+  const targetUserCount = useMemo(() => {
+    if (!formData.department) return 0;
+    const users = getUsersByRoleAndDepartment('student', formData.department);
+    return users.filter((u) => u.position === formData.positionType).length;
+  }, [formData.department, formData.positionType, getUsersByRoleAndDepartment]);
+
   const filteredExams = exams.filter((e) =>
     e.title.includes(search) || e.department.includes(search)
   );
 
   const questionBanks = getQuestionBanks();
 
+  const handlePositionChange = (pos: 'doctor' | 'nurse' | 'technician') => {
+    const defaultBank = allBanks.find((b) => b.positionType === pos);
+    setFormData({ ...formData, positionType: pos, bankId: defaultBank?.id || '' });
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const bank = questionBanks.find((b) => b.id === formData.bankId);
     const questions = useExamStore.getState().getQuestionsByBankId(formData.bankId);
     const questionIds = questions.slice(0, 10).map((q) => q.id);
-    
+
     addExam({
       ...formData,
       status: 'pending',
@@ -52,7 +76,7 @@ export default function ExamManagement() {
       title: '',
       department: '',
       positionType: 'doctor',
-      bankId: '',
+      bankId: allBanks.find((b) => b.positionType === 'doctor')?.id || '',
       startTime: '',
       endTime: '',
       duration: 120,
@@ -182,19 +206,25 @@ export default function ExamManagement() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">科室</label>
-                  <input
-                    type="text"
+                  <select
                     value={formData.department}
                     onChange={(e) => setFormData({ ...formData, department: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                     required
-                  />
+                  >
+                    <option value="">请选择科室</option>
+                    {studentDepartments.map((dept) => (
+                      <option key={dept} value={dept}>
+                        {dept}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">岗位类型</label>
                   <select
                     value={formData.positionType}
-                    onChange={(e) => setFormData({ ...formData, positionType: e.target.value as 'doctor' | 'nurse' | 'technician' })}
+                    onChange={(e) => handlePositionChange(e.target.value as 'doctor' | 'nurse' | 'technician')}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                   >
                     <option value="doctor">医生</option>
@@ -203,6 +233,39 @@ export default function ExamManagement() {
                   </select>
                 </div>
               </div>
+
+              {formData.department && (
+                <div className={
+                  targetUserCount > 0
+                    ? 'bg-blue-50 border border-blue-200 rounded-xl p-4'
+                    : 'bg-amber-50 border border-amber-200 rounded-xl p-4'
+                }>
+                  <div className="flex items-start gap-3">
+                    {targetUserCount > 0 ? (
+                      <Users size={20} className="text-blue-600 mt-0.5 flex-shrink-0" />
+                    ) : (
+                      <AlertCircle size={20} className="text-amber-600 mt-0.5 flex-shrink-0" />
+                    )}
+                    <div>
+                      <p className={
+                        targetUserCount > 0 ? 'text-sm font-medium text-blue-800' : 'text-sm font-medium text-amber-800'
+                      }>
+                        {targetUserCount > 0
+                          ? `已匹配到 ${targetUserCount} 名 ${positionLabels[formData.positionType]}（${formData.department}）`
+                          : `该科室暂无可参加考试的${positionLabels[formData.positionType]}人员`}
+                      </p>
+                      <p className={
+                        targetUserCount > 0 ? 'text-xs text-blue-600 mt-1' : 'text-xs text-amber-600 mt-1'
+                      }>
+                        {targetUserCount > 0
+                          ? '发布考试后，系统会自动通知以上人员参加'
+                          : '请检查科室和岗位选择是否正确'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">选择题库</label>
                 <select
@@ -212,12 +275,13 @@ export default function ExamManagement() {
                   required
                 >
                   <option value="">请选择题库</option>
-                  {questionBanks.map((bank) => (
+                  {filteredBanks.map((bank) => (
                     <option key={bank.id} value={bank.id}>
                       {bank.name}（{bank.questionCount}题）
                     </option>
                   ))}
                 </select>
+                <p className="text-xs text-gray-400 mt-1">已按岗位自动筛选匹配题库</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -283,9 +347,14 @@ export default function ExamManagement() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                  disabled={targetUserCount === 0}
+                  className={
+                    targetUserCount === 0
+                      ? 'px-4 py-2 bg-gray-300 text-gray-500 rounded-lg cursor-not-allowed transition-colors'
+                      : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors'
+                  }
                 >
-                  发布考试
+                  {targetUserCount === 0 ? '无匹配考生' : `发布考试（通知 ${targetUserCount} 人）`}
                 </button>
               </div>
             </form>

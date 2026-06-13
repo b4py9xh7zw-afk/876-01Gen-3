@@ -131,12 +131,29 @@ export const useExamStore = create<ExamState>((set, get) => ({
   },
 
   addExam: (examData) => {
+    const newExamId = `exam_${Date.now()}`;
     const newExam: Exam = {
       ...examData,
-      id: `exam_${Date.now()}`,
+      id: newExamId,
       createdAt: new Date().toISOString(),
     };
-    set((state) => ({ exams: [...state.exams, newExam] }));
+    const targetUsers = mockUsers.filter(
+      (u) =>
+        u.role === 'student' &&
+        u.department === examData.department &&
+        u.position === examData.positionType
+    );
+    const newParticipants: ExamParticipant[] = targetUsers.map((u, idx) => ({
+      id: `p_${newExamId}_${u.id}_${idx}`,
+      examId: newExamId,
+      userId: u.id,
+      status: 'pending' as const,
+      isMakeup: false,
+    }));
+    set((state) => ({
+      exams: [...state.exams, newExam],
+      participants: [...state.participants, ...newParticipants],
+    }));
   },
 
   updateScoreReview: (scoreId, subjectiveScores, comments) => {

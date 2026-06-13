@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useExamStore } from '../../store/examStore';
 import { useAuthStore } from '../../store/authStore';
+import { cn } from '../../lib/utils';
 import {
   Clock,
   ChevronLeft,
@@ -9,6 +10,8 @@ import {
   Send,
   AlertCircle,
   CheckCircle,
+  Ban,
+  Timer,
 } from 'lucide-react';
 
 export default function ExamPage() {
@@ -19,6 +22,7 @@ export default function ExamPage() {
     getExamById,
     getQuestionById,
     submitExam,
+    setCurrentExam,
   } = useExamStore();
 
   const exam = getExamById(examId || '');
@@ -26,22 +30,62 @@ export default function ExamPage() {
     .map((id) => getQuestionById(id))
     .filter(Boolean) || [];
 
+  const autoSubmittedRef = useRef(false);
+
+  const timeWindowCheck = useMemo(() => {
+    if (!exam) return { valid: true, status: 'loading' as const };
+    const now = Date.now();
+    const start = new Date(exam.startTime).getTime();
+    const end = new Date(exam.endTime).getTime();
+    if (now < start) return { valid: false, status: 'not_started' as const, message: `考试尚未开始（${new Date(start).toLocaleString('zh-CN')}）` };
+    if (now > end) return { valid: false, status: 'ended' as const, message: '考试已结束' };
+    const maxSec = exam.duration * 60;
+    const windowSec = Math.max(0, Math.floor((end - now) / 1000));
+    return { valid: true, status: 'ongoing' as const, initialSeconds: Math.min(maxSec, windowSec) };
+  }, [exam?.id]);
+
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [timeLeft, setTimeLeft] = useState(exam?.duration ? exam.duration * 60 : 0);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [autoSubmitCountdown, setAutoSubmitCountdown] = useState<number | null>(null);
 
   const currentQuestion = questions[currentIndex];
 
   useEffect(() => {
-    if (timeLeft > 0 && !submitted) {
-      const timer = setInterval(() => {
-        setTimeLeft((t) => t - 1);
-      }, 1000);
-      return () => clearInterval(timer);
+    if (exam) {
+      setCurrentExam(exam);
     }
-  }, [timeLeft, submitted]);
+    if (timeWindowCheck.valid && timeWindowCheck.initialSeconds !== undefined) {
+      setTimeLeft(timeWindowCheck.initialSeconds);
+    }
+  }, [exam?.id, timeWindowCheck.valid, timeWindowCheck.initialSeconds]);
+
+  useEffect(() => {
+    if (submitted || timeLeft <= 0 || !timeWindowCheck.valid) return;
+    const timer = setInterval(() => {
+      setTimeLeft((t) => t - 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [timeLeft, submitted, timeWindowCheck.valid]);
+
+  useEffect(() => {
+    if (timeLeft > 0 && timeLeft <= 10 && !submitted && !autoSubmittedRef.current) {
+      setAutoSubmitCountdown(timeLeft);
+    }
+    if (timeLeft === 0 && !submitted && !autoSubmittedRef.current && timeWindowCheck.valid) {
+      autoSubmittedRef.current = true;
+      setAutoSubmitCountdown(0);
+      if (exam && user) {
+        try {
+          submitExam(exam.id, user.id, answers);
+        } catch (e) {}
+        setSubmitted(true);
+        setTimeout(() => navigate('/student/scores?auto=1'), 1500);
+      }
+    }
+  }, [timeLeft, submitted, exam?.id, user?.id, answers, timeWindowCheck.valid]);
 
   const formatTime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
@@ -90,21 +134,72 @@ export default function ExamPage() {
   const answeredCount = Object.keys(answers).length;
   const progress = questions.length > 0 ? (answeredCount / questions.length) * 100 : 0;
 
-  if (!exam || !currentQuestion) {
+  if (!exam) {
     return (
       <div className="p-6">
-            <p className="text-gray-500">考试不存在</p>
+        <p className="text-gray-500">考试不存在</p>
+      </div>
+    );
+  }
+
+  if (!timeWindowCheck.valid) {
+    const isNotStarted = timeWindowCheck.status === 'not_started';
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
+        <div className="max-w-md w-full bg-white rounded-2xl border border-gray-200 p-10 text-center shadow-sm">
+          <div className={cn(
+            'w-20 h-20 mx-auto mb-6 rounded-full flex items-center justify-center',
+            isNotStarted ? 'bg-amber-100' : 'bg-red-100'
+          )}>
+            {isNotStarted ? (
+              <Timer size={36} className="text-amber-600" />
+            ) : (
+              <Ban size={36} className="text-red-600" />
+            )}
           </div>
+          <h3 className="text-2xl font-semibold text-gray-800 mb-2">
+            {isNotStarted ? '考试尚未开始' : '考试已结束'}
+          </h3>
+          <p className="text-gray-500 mb-8">{timeWindowCheck.message}</p>
+          <div className="bg-gray-50 rounded-xl p-4 mb-6 text-sm text-left space-y-2">
+            <div className="flex justify-between">
+              <span className="text-gray-500">考试名称</span>
+              <span className="font-medium text-gray-800">{exam.title}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">考试时间</span>
+              <span className="font-medium text-gray-800">
+                {new Date(exam.startTime).toLocaleString('zh-CN')} ~ {new Date(exam.endTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">考试时长</span>
+              <span className="font-medium text-gray-800">{exam.duration} 分钟</span>
+            </div>
+          </div>
+          <button
+            onClick={() => navigate('/student/exams')}
+            className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+          >
+            返回考试列表
+          </button>
+        </div>
+      </div>
     );
   }
 
   if (submitted) {
+    const wasAutoSubmitted = autoSubmittedRef.current;
     return (
       <div className="p-6">
         <div className="max-w-md mx-auto bg-white rounded-xl border border-gray-200 p-12 text-center">
           <CheckCircle size={64} className="mx-auto text-green-500 mb-4" />
-          <h3 className="text-xl font-semibold text-gray-800 mb-2">试卷已提交</h3>
-          <p className="text-gray-500 mb-6">您的答案已成功提交，请等待批阅</p>
+          <h3 className="text-xl font-semibold text-gray-800 mb-2">
+            {wasAutoSubmitted ? '时间到，试卷已自动提交' : '试卷已提交'}
+          </h3>
+          <p className="text-gray-500 mb-6">
+            {wasAutoSubmitted ? '您的答题内容已自动保存并提交，请等待批阅' : '您的答案已成功提交，请等待批阅'}
+          </p>
           <button
             onClick={() => navigate('/student/scores')}
             className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -117,9 +212,19 @@ export default function ExamPage() {
   }
 
   const isFiveMinutesLeft = timeLeft <= 300;
+  const isLastTenSeconds = autoSubmitCountdown !== null && autoSubmitCountdown <= 10;
 
   return (
-    <div className="h-full flex flex-col">
+    <div className={cn('h-full flex flex-col transition-colors', isLastTenSeconds && 'bg-red-50')}>
+      {isLastTenSeconds && (
+        <div className="bg-red-600 text-white px-6 py-3 flex items-center justify-between animate-pulse">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={20} />
+            <span className="font-semibold">⚠️ 考试即将结束，系统将自动提交试卷</span>
+          </div>
+          <span className="font-mono font-bold text-2xl tabular-nums">{autoSubmitCountdown}s</span>
+        </div>
+      )}
       <div className="bg-white border-b border-gray-200 px-6 py-4">
         <div className="flex items-center justify-between">
           <div>
@@ -129,14 +234,17 @@ export default function ExamPage() {
             </p>
           </div>
           <div
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-            isFiveMinutesLeft
-              ? 'bg-red-100 text-red-600 animate-pulse'
-              : 'bg-blue-100 text-blue-600'
-          }`}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2 rounded-lg transition-all',
+              isLastTenSeconds
+                ? 'bg-red-600 text-white scale-110 shadow-lg'
+                : isFiveMinutesLeft
+                ? 'bg-red-100 text-red-600 animate-pulse'
+                : 'bg-blue-100 text-blue-600'
+            )}
           >
             <Clock size={20} />
-            <span className="font-mono font-bold text-lg">{formatTime(timeLeft)}</span>
+            <span className="font-mono font-bold text-lg tabular-nums">{formatTime(timeLeft)}</span>
           </div>
         </div>
         <div className="mt-3 h-2 bg-gray-100 rounded-full overflow-hidden">

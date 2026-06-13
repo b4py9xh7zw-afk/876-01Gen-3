@@ -9,6 +9,7 @@ export interface User {
   username: string;
   password: string;
   name: string;
+  employeeId: string;
   role: UserRole;
   department: string;
   position: PositionType;
